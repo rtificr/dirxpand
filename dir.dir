@@ -1,0 +1,7 @@
+src/
+    t.txt
+target/
+    release/
+        main.exe
+    debug/
+        dbg.exe
