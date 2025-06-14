@@ -1,36 +1,138 @@
-use std::{collections::BTreeSet, env::args, fs, io::BufRead, path::Path};
+use rfd::MessageDialog;
+use std::{
+    collections::BTreeSet,
+    ffi::OsStr,
+    fs,
+    io::{BufRead, LineWriter, Write},
+    path::{Path, PathBuf},
+};
 
 fn main() {
-    let filename = args().nth(1).expect("No input file provided");
-    let path = Path::new(&filename).with_extension("dir");
+    let args: Vec<String> = std::env::args().collect();
+
+    let raw_paths = match args.len() {
+        2.. => args
+            .iter()
+            .skip(1)
+            .map(|s| PathBuf::from(s))
+            .collect::<Vec<_>>(),
+        _ => rfd::FileDialog::new()
+            .set_title("Select file to expand")
+            .set_directory(std::env::current_dir().unwrap())
+            .pick_files()
+            .map(|files| files)
+            .unwrap_or(vec![]),
+    };
+
+    if raw_paths.is_empty() {
+        MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Error")
+            .set_description("No file selected")
+            .show();
+        return;
+    }
+    for raw_path in &raw_paths {
+        let filepath =
+            std::fs::canonicalize(raw_path).unwrap_or_else(|_| Path::new(raw_path).to_path_buf());
+
+        if filepath.is_dir() {
+            if let Err(e) = create_schema(&filepath) {
+                MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Error)
+                    .set_title("Error While Creating Schema")
+                    .set_description(&format!("{}", e))
+                    .show();
+            }
+        } else {
+            if let Err(e) = process_dir_file(&filepath) {
+                MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Error)
+                    .set_title("Error While Processing File")
+                    .set_description(&format!("{}", e))
+                    .show();
+            }
+        }
+    }
+}
+pub fn create_schema(filepath: &std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let file = fs::File::create_new(filepath.with_extension("dir"))?;
+    let mut writer = LineWriter::new(file);
+    let lines = sub_schema(filepath, 0)?;
+
+    for line in &lines {
+        writer.write(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+    }
+
+    println!("{} lines written to {}", lines.len(), filepath.display());
+    Ok(())
+}
+pub fn sub_schema(
+    filepath: &PathBuf,
+    depth: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut entries = fs::read_dir(filepath)?
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<_>>();
+    entries.sort(); // alphabetical sort among siblings
+
+    let mut lines = Vec::new();
+    for path in entries {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if path.is_dir() {
+            lines.push(format!("{}{}/", "    ".repeat(depth), name));
+            lines.extend(sub_schema(&path, depth + 1)?);
+        } else {
+            lines.push(format!("{}{}", "    ".repeat(depth), name));
+        }
+    }
+    Ok(lines)
+}
+pub fn process_dir_file(filepath: &std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let path = if filepath.extension().map(|e| e == "dir").unwrap_or(false) {
+        filepath.clone()
+    } else {
+        filepath.with_extension("dir")
+    };
 
     let file = fs::File::open(&path).expect("Failed to open input file");
     let reader = std::io::BufReader::new(file);
     let mut lines = reader
         .lines()
-        .filter_map(|line| {
+        .enumerate()
+        .filter_map(|(i, line)| {
             let line = line.unwrap();
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
             let indent = line.chars().take_while(|c| c.is_whitespace()).count();
             let name = line.trim().to_string();
-            Some(IndentMeasuredString { indent, name })
+            Some(IndentMeasuredString {
+                indent,
+                name,
+                source_line: i + 1,
+            })
         })
         .collect::<Vec<_>>();
 
     normalize_indentation(&mut lines);
 
     let mut root = Node::Directory(Directory {
-        name: filename.to_string(),
+        name: filepath
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output")
+            .to_string(),
         children: Vec::new(),
     });
-    let mut stack  = vec![&mut root as *mut Node];
+
+    let mut stack = vec![&mut root as *mut Node];
     for line in &mut lines {
         let level = line.indent;
         stack.truncate(level + 1);
 
-        let new_node = if line.name.ends_with("/") {
+        let new_node = if line.name.ends_with('/') {
             let dir_name = line.name.trim_end_matches('/');
             Node::Directory(Directory {
                 name: dir_name.to_string(),
@@ -41,32 +143,40 @@ fn main() {
         };
 
         unsafe {
-            match &mut *stack[level] {
+            match &mut (*stack[level]) {
                 Node::Directory(dir) => {
                     dir.children.push(new_node);
                     let child_ref = dir.children.last_mut().unwrap() as *mut Node;
                     stack.push(child_ref);
                 }
                 Node::File(_) => {
-                    panic!("Unexpected child node at level {}. Files cannot have children", level);
+                    return Err(format!(
+                        "Unexpected child node at line {}. Files cannot have children",
+                        line.source_line
+                    )
+                    .into());
                 }
             }
         }
     }
 
-    if let Err(e) = create_node(&root, Path::new(".")) {
-        println!("Error creating directories: {}", e);
-    }
+    let path = filepath.parent().ok_or("Failed to get parent directory")?;
+
+    create_node(&root, &path)?;
+    Ok(())
 }
 
-fn create_node(root: &Node, path: &Path) -> Result<(), std::io::Error> {
-    match root {
+fn create_node(node: &Node, path: &Path) -> Result<(), std::io::Error> {
+    match &node {
         Node::Directory(dir) => {
             let dir_path = path.join(&dir.name);
             if dir_path.exists() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
-                    format!("Path '{}' already exists", dir_path.display()),
+                    format!(
+                        "Path '{}' already exists",
+                        dir_path.file_name().unwrap_or(OsStr::new("")).display()
+                    ),
                 ));
             }
             fs::create_dir_all(&dir_path)?;
@@ -107,30 +217,15 @@ fn normalize_indentation(lines: &mut Vec<IndentMeasuredString>) {
 struct IndentMeasuredString {
     indent: usize,
     name: String,
+    source_line: usize,
 }
 
-#[derive(Clone)]
 struct Directory {
     name: String,
     children: Vec<Node>,
 }
-#[derive(Clone)]
+
 enum Node {
     Directory(Directory),
     File(String),
-}
-impl Node {
-    fn name(&self) -> &str {
-        match self {
-            Node::Directory(dir) => &dir.name,
-            Node::File(name) => name,
-        }
-    }
-
-    fn children(&self) -> &[Node] {
-        match self {
-            Node::Directory(dir) => &dir.children,
-            Node::File(_) => &[],
-        }
-    }
 }

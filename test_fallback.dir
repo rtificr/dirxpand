@@ -1,0 +1,8 @@
+TestProject/
+    src/
+        main.rs
+        lib.rs
+    docs/
+        README.md
+    tests/
+        unit_tests.rs
