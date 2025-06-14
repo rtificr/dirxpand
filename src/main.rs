@@ -10,6 +10,20 @@ use std::{
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    let exe_dir = if cfg!(target_os = "macos") {
+        std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    } else {
+        std::env::current_exe().unwrap().to_path_buf()
+    };
+
     let raw_paths = match args.len() {
         2.. => args
             .iter()
@@ -18,20 +32,16 @@ fn main() {
             .collect::<Vec<_>>(),
         _ => rfd::FileDialog::new()
             .set_title("Select file to expand")
-            .set_directory(std::env::current_dir().unwrap())
+            .set_directory(exe_dir)
             .pick_files()
             .map(|files| files)
             .unwrap_or(vec![]),
     };
 
     if raw_paths.is_empty() {
-        MessageDialog::new()
-            .set_level(rfd::MessageLevel::Error)
-            .set_title("Error")
-            .set_description("No file selected")
-            .show();
         return;
     }
+
     for raw_path in &raw_paths {
         let filepath =
             std::fs::canonicalize(raw_path).unwrap_or_else(|_| Path::new(raw_path).to_path_buf());
