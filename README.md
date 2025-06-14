@@ -15,6 +15,6 @@ This will be expanded to become a folder with the above contents.
 
 To make a folder, simply write the name followed by a slash. To make a file, simply write the name of the file. To put things in a folder, make sure they are indented past the folder (exact spacing irrelevant) and below it.
 
-To use, simply open a plain text file with the executable, or (ideally) rename the file to have a `.dir` extension and always open with the executable, allowing double-clicking `.dir` files to quickly instantiate a folder.
+To use, simply open a plain text file with the executable, or (ideally) rename the file to have a `.dir` extension and always open with the executable, allowing double-clicking `.dir` files to quickly instantiate a folder. Opening folders with the app will derive a `.dir` file from the folder's structure. Opening the app without a file will open a file dialog.
 
 If the target folder already exists, execution will fail and nothing will happen.
