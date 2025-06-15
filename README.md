@@ -1,4 +1,4 @@
-# DIRXPAND
+# DirXpand
 
 A simple way to instantiate folder structures from easily written plain text. This allows you to create a folder structure once and reuse it easily.
 
